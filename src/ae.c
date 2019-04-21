@@ -46,15 +46,22 @@
 
 /* Include the best multiplexing layer supported by this system.
  * The following should be ordered by performances, descending. */
+// 不同系统支持的多路复用IO的API不一样，根据不同的系统提供不同的实现，提供一层薄薄的封装
 #ifdef HAVE_EVPORT
+// OpenSolaris系统对应的版本
 #include "ae_evport.c"
 #else
     #ifdef HAVE_EPOLL
+    // Linux下用的是这个epoll的版本
+    // 相对于select，epool在连接数较多、大部分连接不太活跃的情况下优势比较明显，
+    // epoll可以看成是select在连接较多情况下的增强版本
     #include "ae_epoll.c"
     #else
         #ifdef HAVE_KQUEUE
+        // FreeBSD系统对应的版本，与epoll类似
         #include "ae_kqueue.c"
         #else
+        // select，类Unix系统都会有的接口
         #include "ae_select.c"
         #endif
     #endif
@@ -73,16 +80,25 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
     eventLoop->timeEventHead = NULL;
     eventLoop->timeEventNextId = 0;
     eventLoop->stop = 0;
+    // -1代表目前没有被监听的文件描述符
     eventLoop->maxfd = -1;
     eventLoop->beforesleep = NULL;
     eventLoop->aftersleep = NULL;
     if (aeApiCreate(eventLoop) == -1) goto err;
     /* Events with mask == AE_NONE are not set. So let's initialize the
      * vector with it. */
+    // 监听的事件类型也设置为无
+    // fired不需要这样初始化大概是因为fired只是aeProcessEvents函数使用的临时结构，
+    // 并且fired使用时的有效索引区间是从0开始连续的
+    // events需要这样初始化是因为被监听的文件描述符不一定是连续的，
+    // 只能根据是否有监听的事件类型判断文件描述符是否正在被监听
     for (i = 0; i < setsize; i++)
         eventLoop->events[i].mask = AE_NONE;
     return eventLoop;
 
+// err，类似（但不等于）高级语言异常处理的finally代码块，出错时释放资源
+// C++智能指针的析构函数和python异常处理的else代码块也可以达到相同的效果
+// 其实这里的goto也可以用 do { if(...)break; } while(0) 代替，不过这样也使得程序不那么简洁
 err:
     if (eventLoop) {
         zfree(eventLoop->events);
@@ -108,6 +124,7 @@ int aeResizeSetSize(aeEventLoop *eventLoop, int setsize) {
     int i;
 
     if (setsize == eventLoop->setsize) return AE_OK;
+    // 缩减容量不能导致已被监听的文件描述符失效
     if (eventLoop->maxfd >= setsize) return AE_ERR;
     if (aeApiResize(eventLoop,setsize) == -1) return AE_ERR;
 
@@ -117,6 +134,11 @@ int aeResizeSetSize(aeEventLoop *eventLoop, int setsize) {
 
     /* Make sure that if we created new slots, they are initialized with
      * an AE_NONE mask. */
+    // 保证扩容的情况下扩展的对象事件类型初始化为无
+    // fired不需要这样初始化大概是因为fired只是aeProcessEvents函数使用的临时结构，
+    // 并且fired使用时的有效索引区间是从0开始连续的
+    // events需要这样初始化是因为被监听的文件描述符不一定是连续的，
+    // 只能根据是否有监听的事件类型判断文件描述符是否正在被监听
     for (i = eventLoop->maxfd+1; i < setsize; i++)
         eventLoop->events[i].mask = AE_NONE;
     return AE_OK;
@@ -136,6 +158,8 @@ void aeStop(aeEventLoop *eventLoop) {
 int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData)
 {
+    // 添加的文件描述符不能大于最大描述符数量，因为文件描述会作为events数组的索引使用
+    // 这里容量不够时并不会自动扩容，容量需要使用的地方控制
     if (fd >= eventLoop->setsize) {
         errno = ERANGE;
         return AE_ERR;
@@ -148,6 +172,7 @@ int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
     if (mask & AE_READABLE) fe->rfileProc = proc;
     if (mask & AE_WRITABLE) fe->wfileProc = proc;
     fe->clientData = clientData;
+    // 维护最大有效文件描述符
     if (fd > eventLoop->maxfd)
         eventLoop->maxfd = fd;
     return AE_OK;
@@ -165,6 +190,7 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
 
     aeApiDelEvent(eventLoop, fd, mask);
     fe->mask = fe->mask & (~mask);
+    // 维护最大有效文件描述符
     if (fd == eventLoop->maxfd && fe->mask == AE_NONE) {
         /* Update the max fd */
         int j;
@@ -176,12 +202,16 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
 }
 
 int aeGetFileEvents(aeEventLoop *eventLoop, int fd) {
+    // 如果超出范围，返回无
     if (fd >= eventLoop->setsize) return 0;
     aeFileEvent *fe = &eventLoop->events[fd];
 
+    // 返回事件类型
     return fe->mask;
 }
 
+// 获取当前时间的秒和毫秒，两者一起为精确到毫秒的当前时间
+// 如果只有一个long类型，4字节表示范围应该不足以让时间精确到毫秒
 static void aeGetTime(long *seconds, long *milliseconds)
 {
     struct timeval tv;
@@ -191,12 +221,15 @@ static void aeGetTime(long *seconds, long *milliseconds)
     *milliseconds = tv.tv_usec/1000;
 }
 
+// 当前时间增加milliseconds毫秒，结果通过(sec, ms)返回
 static void aeAddMillisecondsToNow(long long milliseconds, long *sec, long *ms) {
     long cur_sec, cur_ms, when_sec, when_ms;
 
+    // 首先获取当前时间
     aeGetTime(&cur_sec, &cur_ms);
     when_sec = cur_sec + milliseconds/1000;
     when_ms = cur_ms + milliseconds%1000;
+    // 毫秒超过1000，进位
     if (when_ms >= 1000) {
         when_sec ++;
         when_ms -= 1000;
@@ -209,12 +242,14 @@ long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
         aeTimeProc *proc, void *clientData,
         aeEventFinalizerProc *finalizerProc)
 {
+    // 生成定时事件Id
     long long id = eventLoop->timeEventNextId++;
     aeTimeEvent *te;
 
     te = zmalloc(sizeof(*te));
     if (te == NULL) return AE_ERR;
     te->id = id;
+    // 计算事件触发时间
     aeAddMillisecondsToNow(milliseconds,&te->when_sec,&te->when_ms);
     te->timeProc = proc;
     te->finalizerProc = finalizerProc;
@@ -227,11 +262,16 @@ long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
     return id;
 }
 
+// 这个函数不会事件删除节点，只会把事件Id置为无效，但是后面的一些操作比如查找，
+// 并不会检测事件Id的有效性，且使用这个函数的地方较少，暂时不明白这个函数的用途
 int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)
 {
     aeTimeEvent *te = eventLoop->timeEventHead;
+    // 常规链表遍历，找到对应Id的定时事件
     while(te) {
         if (te->id == id) {
+            // 找到时候并不立即删除链表节点，而是把Id置为-1
+            // 在processTimeEvents里会统一删除无效节点
             te->id = AE_DELETED_EVENT_ID;
             return AE_OK;
         }
@@ -251,12 +291,17 @@ int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)
  *    Much better but still insertion or deletion of timers is O(N).
  * 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).
  */
+// 查找触发时间最早的事件，O(n)的链表遍历
+// 目前Redis还不打算优化这个操作，大概不是瓶颈吧
 static aeTimeEvent *aeSearchNearestTimer(aeEventLoop *eventLoop)
 {
     aeTimeEvent *te = eventLoop->timeEventHead;
     aeTimeEvent *nearest = NULL;
 
     while(te) {
+        // 前面的定时事件删除操作和后面定时事件处理函数都会把定时事件的Id标记为无效，
+        // 这里不检测Id的有效性，不太明白原因，
+        // 不过这样确实可以让定时事件得到更频繁地触发，及时删除无效节点
         if (!nearest || te->when_sec < nearest->when_sec ||
                 (te->when_sec == nearest->when_sec &&
                  te->when_ms < nearest->when_ms))
@@ -267,6 +312,7 @@ static aeTimeEvent *aeSearchNearestTimer(aeEventLoop *eventLoop)
 }
 
 /* Process time events */
+// 处理定时事件
 static int processTimeEvents(aeEventLoop *eventLoop) {
     int processed = 0;
     aeTimeEvent *te;
@@ -281,6 +327,9 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
      * events to be processed ASAP when this happens: the idea is that
      * processing events earlier is less dangerous than delaying them
      * indefinitely, and practice suggests it is. */
+    // 当前的时间早于上一次的处理时间，表明系统时间有回退，
+    // 为了防止系统时间回退导致的定时任务无限期延长，这里直接把定时任务的时间归零，
+    // 立即处理所有的定时事件
     if (now < eventLoop->lastTime) {
         te = eventLoop->timeEventHead;
         while(te) {
@@ -292,11 +341,13 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
 
     te = eventLoop->timeEventHead;
     maxId = eventLoop->timeEventNextId-1;
+    // 从头到尾遍历链表
     while(te) {
         long now_sec, now_ms;
         long long id;
 
         /* Remove events scheduled for deletion. */
+        // 真正删除定时事件节点
         if (te->id == AE_DELETED_EVENT_ID) {
             aeTimeEvent *next = te->next;
             if (te->prev)
@@ -305,6 +356,7 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
                 eventLoop->timeEventHead = te->next;
             if (te->next)
                 te->next->prev = te->prev;
+            // 定时事件对象销毁前执行的操作，类似C++析构函数，大概为了释放资源之类的吧
             if (te->finalizerProc)
                 te->finalizerProc(eventLoop, te->clientData);
             zfree(te);
@@ -321,6 +373,7 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
             te = te->next;
             continue;
         }
+        // 遍历每个节点重新获取当前时间，使得事件处理更加及时
         aeGetTime(&now_sec, &now_ms);
         if (now_sec > te->when_sec ||
             (now_sec == te->when_sec && now_ms >= te->when_ms))
@@ -331,8 +384,12 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
             retval = te->timeProc(eventLoop, id, te->clientData);
             processed++;
             if (retval != AE_NOMORE) {
+                // 根据处理函数的返回值确定是否需要再次触发定时事件
                 aeAddMillisecondsToNow(retval,&te->when_sec,&te->when_ms);
             } else {
+                // 不直接删除节点，而是标记为无效节点，和前面的删除操作一样，
+                // 大概是为了代码复用吧，不会让删除逻辑分布在多个地方，
+                // 同时节点删除操作放在这个循环里也不会额外增加链表遍历成本
                 te->id = AE_DELETED_EVENT_ID;
             }
         }
@@ -366,12 +423,18 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
      * file events to process as long as we want to process time
      * events, in order to sleep until the next time event is ready
      * to fire. */
+    // 下面的条件有点绕，符合两个条件之一进入需要调用多路复用IO的分支：
+    // 1、存在正在被监听的IO事件;
+    // 2、有定时事件，且多路复用IO调用是阻塞类型，
+    // 定时事件借助IO阻塞的超时设置在指定时间唤醒线程;
     if (eventLoop->maxfd != -1 ||
         ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
         int j;
         aeTimeEvent *shortest = NULL;
         struct timeval tv, *tvp;
 
+        // 获取最近触发的定时事件的触发时间，用来计算IO调用最多能阻塞的时间，
+        // 尽量保证定时事件可以及时处理
         if (flags & AE_TIME_EVENTS && !(flags & AE_DONT_WAIT))
             shortest = aeSearchNearestTimer(eventLoop);
         if (shortest) {
@@ -390,6 +453,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
                 tvp->tv_sec = ms/1000;
                 tvp->tv_usec = (ms % 1000)*1000;
             } else {
+                // 阻塞时间不能小于0
                 tvp->tv_sec = 0;
                 tvp->tv_usec = 0;
             }
@@ -408,12 +472,16 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
         /* Call the multiplexing API, will return only on timeout or when
          * some event fires. */
+        // 等待IO事件就绪，或者阻塞超时
         numevents = aeApiPoll(eventLoop, tvp);
 
         /* After sleep callback. */
         if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
             eventLoop->aftersleep(eventLoop);
 
+        // 处理所有就绪的IO事件
+        // eventLoop->fired的生命周期只在这个作用域内，
+        // 感觉fired没有必要是eventLoop的成员变量
         for (j = 0; j < numevents; j++) {
             aeFileEvent *fe = &eventLoop->events[eventLoop->fired[j].fd];
             int mask = eventLoop->fired[j].mask;
@@ -439,6 +507,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              *
              * Fire the readable event if the call sequence is not
              * inverted. */
+            // 如果没有设置屏障标记，读处理在写处理之前
             if (!invert && fe->mask & mask & AE_READABLE) {
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                 fired++;
@@ -454,6 +523,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
             /* If we have to invert the call, fire the readable event now
              * after the writable one. */
+            // 如果设置了屏障标记，读处理在写处理之后
             if (invert && fe->mask & mask & AE_READABLE) {
                 if (!fired || fe->wfileProc != fe->rfileProc) {
                     fe->rfileProc(eventLoop,fd,fe->clientData,mask);
@@ -465,6 +535,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         }
     }
     /* Check time events */
+    // 处理定时事件
     if (flags & AE_TIME_EVENTS)
         processed += processTimeEvents(eventLoop);
 
@@ -495,6 +566,7 @@ int aeWait(int fd, int mask, long long milliseconds) {
 
 void aeMain(aeEventLoop *eventLoop) {
     eventLoop->stop = 0;
+    // 事件循环
     while (!eventLoop->stop) {
         if (eventLoop->beforesleep != NULL)
             eventLoop->beforesleep(eventLoop);
