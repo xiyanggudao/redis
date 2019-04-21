@@ -1,3 +1,7 @@
+准备逐步给Redis源码加上详细的注释，同时添加一些自己的阅读心得和总结。
+
+下面保留Redis原有的README内容：
+
 This README is just a fast *quick start* document. You can find more detailed documentation at [redis.io](https://redis.io).
 
 What is Redis?
