@@ -481,7 +481,8 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
         // 处理所有就绪的IO事件
         // eventLoop->fired的生命周期只在这个作用域内，
-        // 感觉fired没有必要是eventLoop的成员变量
+        // 感觉fired没有必要是eventLoop的成员变量，不过是成员变量的好处是生命周期较长，
+        // 和临时变量相比可以减少内存分配的频率
         for (j = 0; j < numevents; j++) {
             aeFileEvent *fe = &eventLoop->events[eventLoop->fired[j].fd];
             int mask = eventLoop->fired[j].mask;

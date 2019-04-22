@@ -28,6 +28,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+// quicklist最基本双向循环链表实现，adlist也是双向循环链表，
+// 区别是这里的list一个节点有多个对象，实际上是块状链表，而且节点可能是经过压缩，
+// 数据存储更紧凑，而adlist只是最简单的双向循环链表实现
 #ifndef __QUICKLIST_H__
 #define __QUICKLIST_H__
 
