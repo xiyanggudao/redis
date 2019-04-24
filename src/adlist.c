@@ -42,6 +42,7 @@ list *listCreate(void)
 {
     struct list *list;
 
+    // 链表创建，常规操作，分配内存，初始化成员
     if ((list = zmalloc(sizeof(*list))) == NULL)
         return NULL;
     list->head = list->tail = NULL;
@@ -60,6 +61,7 @@ void listEmpty(list *list)
 
     current = list->head;
     len = list->len;
+    // 常规遍历，逐个释放节点以及节点中的对象
     while(len--) {
         next = current->next;
         if (list->free) list->free(current->value);
@@ -265,12 +267,14 @@ list *listDup(list *orig)
         if (copy->dup) {
             value = copy->dup(node->value);
             if (value == NULL) {
+                // 保证失败的情况下函数没有副作用
                 listRelease(copy);
                 return NULL;
             }
         } else
             value = node->value;
         if (listAddNodeTail(copy, value) == NULL) {
+            // 保证失败的情况下函数没有副作用
             listRelease(copy);
             return NULL;
         }

@@ -28,7 +28,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-// adlist最基本双向循环链表实现，quicklist也是双向循环链表，
+// adlist最基本双向（不循环）链表实现，quicklist也是双向（不循环）链表，
 // 区别是这里的list一个节点只有一个对象，而quicklist实际上是块状链表，
 // 一个节点中有多个对象，而且quicklist的节点可能是经过压缩的，数据存储更紧凑
 #ifndef __ADLIST_H__
@@ -53,14 +53,16 @@ typedef struct listIter {
 
 // 链表对象
 typedef struct list {
-    // 头尾指针，感觉有头指针就行，尾指针就是head->prev，不过这种实现细节区别不大
+    // 头尾指针，如果是循环链表的话，感觉有头指针就行，
+    // 尾指针就是head->prev，不过这种实现细节区别不大
     listNode *head;
     listNode *tail;
-    // Duplicate函数，提供对象复制操作
+    // Duplicate函数，提供对象复制操作，如果为空，则链表复制时是指针复制
     void *(*dup)(void *ptr);
-    // 对象释放操作，删除链表节点时会释放节点引用的对象
+    // 对象释放操作，删除链表节点时会释放节点引用的对象，
+    // 如果为空，则链表释放时不会释放对象
     void (*free)(void *ptr);
-    // 对象查找时会用到的匹配操作
+    // 对象查找时会用到的匹配操作，如果为空，则查找时是指针地址比较
     int (*match)(void *ptr, void *key);
     // 链表里的对象个数
     unsigned long len;
@@ -83,22 +85,41 @@ typedef struct list {
 #define listGetMatchMethod(l) ((l)->match)
 
 /* Prototypes */
+// 创建链表
 list *listCreate(void);
+// 释放链表
 void listRelease(list *list);
+// 清空链表，链表对象本身仍在，节点被清除
 void listEmpty(list *list);
+// 链表头部插入节点
 list *listAddNodeHead(list *list, void *value);
+// 链表尾部插入节点
 list *listAddNodeTail(list *list, void *value);
+// 链表指定位置插入节点
+// after如果为true则在old_node之后的位置插入节点，否则在old_node之前插入节点
 list *listInsertNode(list *list, listNode *old_node, void *value, int after);
+// 删除节点
 void listDelNode(list *list, listNode *node);
+// 创建链表的迭代器
+// direction是迭代器遍历的方向（AL_START_HEAD从头到尾/AL_START_TAIL从尾到头）
 listIter *listGetIterator(list *list, int direction);
+// 迭代器移动到下一个位置，返回当前节点
 listNode *listNext(listIter *iter);
+// 释放迭代器
 void listReleaseIterator(listIter *iter);
+// 链表复制
 list *listDup(list *orig);
+// 通过链表的match方法查找节点
 listNode *listSearchKey(list *list, void *key);
+// 获取第index个节点，如果index为负，这是从后往前第|index|个节点
 listNode *listIndex(list *list, long index);
+// 重置迭代器到链表头部，向尾部方向遍历
 void listRewind(list *list, listIter *li);
+// 重置迭代器到链表尾部，向头部方向遍历
 void listRewindTail(list *list, listIter *li);
+// 旋转链表，把尾部节点移到头部
 void listRotate(list *list);
+// 链表合并操作，o合并到l，合并之后o为空链表
 void listJoin(list *l, list *o);
 
 /* Directions for iterators */
