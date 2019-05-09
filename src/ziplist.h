@@ -36,6 +36,9 @@
 
 // 新创建一个空列表，只包含列表头尾，没有多余的内存，返回列表指针
 unsigned char *ziplistNew(void);
+// 两个ziplist合并，second追加到first
+// 如果合并成功，返回合并后的ziplist，同时合并后的list也通过first返回，
+// 并且释放second，如果合并失败，返回nullptr
 unsigned char *ziplistMerge(unsigned char **first, unsigned char **second);
 unsigned char *ziplistPush(unsigned char *zl, unsigned char *s, unsigned int slen, int where);
 unsigned char *ziplistIndex(unsigned char *zl, int index);
