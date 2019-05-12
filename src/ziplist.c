@@ -191,7 +191,7 @@
 // zlend占一个字节，值是255，标记着列表的结尾，由于每个元素的开头不可能是255，
 // 每个元素的格式后面会讲，所以一旦遇到255开头的元素就代表列表到结尾了，
 // 从数据完备性来说zlend并不是必要的，但是有这个字节可以给编程带来很多便利性，
-// 数据格式的设计逻辑也更加清晰
+// 比如指针可以指向最后一个元素的下一个字节而不越界，数据格式的设计逻辑也更加清晰
 
 // ziplist每个元素entry的格式大致如下：
 // <prevlen> <encoding> <entry-data>
@@ -998,6 +998,7 @@ unsigned char *ziplistMerge(unsigned char **first, unsigned char **second) {
     /* Pick the largest ziplist so we can resize easily in-place.
      * We must also track if we are now appending or prepending to
      * the target ziplist. */
+    // 使用占用内存大的容器，这样扩张内存的概率小
     if (first_len >= second_len) {
         /* retain first, append second to first. */
         target = *first;
@@ -1015,8 +1016,10 @@ unsigned char *ziplistMerge(unsigned char **first, unsigned char **second) {
     }
 
     /* Calculate final bytes (subtract one pair of metadata) */
+    // 合并后ziplist占用的内存大小
     size_t zlbytes = first_bytes + second_bytes -
                      ZIPLIST_HEADER_SIZE - ZIPLIST_END_SIZE;
+                     // 合并后的长度
     size_t zllength = first_len + second_len;
 
     /* Combined zl length should be limited within UINT16_MAX */
@@ -1027,11 +1030,13 @@ unsigned char *ziplistMerge(unsigned char **first, unsigned char **second) {
     size_t second_offset = intrev32ifbe(ZIPLIST_TAIL_OFFSET(*second));
 
     /* Extend target to new zlbytes then append or prepend source. */
+    // 分配足够的内存
     target = zrealloc(target, zlbytes);
     if (append) {
         /* append == appending to target */
         /* Copy source after target (copying over original [END]):
          *   [TARGET - END, SOURCE - HEADER] */
+        // second内容直接追加
         memcpy(target + target_bytes - ZIPLIST_END_SIZE,
                source + ZIPLIST_HEADER_SIZE,
                source_bytes - ZIPLIST_HEADER_SIZE);
@@ -1040,9 +1045,11 @@ unsigned char *ziplistMerge(unsigned char **first, unsigned char **second) {
         /* Move target *contents* exactly size of (source - [END]),
          * then copy source into vacataed space (source - [END]):
          *   [SOURCE - END, TARGET - HEADER] */
+        // second内容后移，腾出空间放first内容，确保first内容在前，second内容在后
         memmove(target + source_bytes - ZIPLIST_END_SIZE,
                 target + ZIPLIST_HEADER_SIZE,
                 target_bytes - ZIPLIST_HEADER_SIZE);
+        // first内容填充腾出来的空间
         memcpy(target, source, source_bytes - ZIPLIST_END_SIZE);
     }
 
@@ -1062,9 +1069,12 @@ unsigned char *ziplistMerge(unsigned char **first, unsigned char **second) {
      * correct prev length value (then it assumes the rest of the list is okay).
      * We tell CascadeUpdate to start at the first ziplist's tail element to fix
      * the merge seam. */
+    // second内容在first后面，second元素的prevlen字段可能需要更新
+    // target+first_offset是first的最后一个元素，即第一个不需要更新prevlen的元素
     target = __ziplistCascadeUpdate(target, target+first_offset);
 
     /* Now free and NULL out what we didn't realloc */
+    // 释放置空已经合并转移内容的ziplist
     if (append) {
         zfree(*second);
         *second = NULL;
@@ -1092,6 +1102,7 @@ unsigned char *ziplistIndex(unsigned char *zl, int index) {
     if (index < 0) {
         index = (-index)-1;
         p = ZIPLIST_ENTRY_TAIL(zl);
+        // 不断通过prevlen字段的值往前迭代
         if (p[0] != ZIP_END) {
             ZIP_DECODE_PREVLEN(p, prevlensize, prevlen);
             while (prevlen > 0 && index--) {
@@ -1101,10 +1112,14 @@ unsigned char *ziplistIndex(unsigned char *zl, int index) {
         }
     } else {
         p = ZIPLIST_ENTRY_HEAD(zl);
+        // 不断通过prevlen和encoding字段计算当前元素的长度，往后迭代
         while (p[0] != ZIP_END && index--) {
             p += zipRawEntryLength(p);
         }
     }
+    // 这里通过p[0]（index >= 0时）或者index（index < 0时）判断是否越界，
+    // 感觉在元素个数小于2^16-1时，可以直接通过zllen判断，这样会快速一点，
+    // 估计越界的情况一般不会发生，频率小所以按目前实现方式影响不大
     return (p[0] == ZIP_END || index > 0) ? NULL : p;
 }
 
@@ -1124,6 +1139,7 @@ unsigned char *ziplistNext(unsigned char *zl, unsigned char *p) {
         return NULL;
     }
 
+    // 通过prevlen和encoding字段计算当前元素的长度，往后迭代
     p += zipRawEntryLength(p);
     if (p[0] == ZIP_END) {
         return NULL;
@@ -1139,12 +1155,12 @@ unsigned char *ziplistPrev(unsigned char *zl, unsigned char *p) {
     /* Iterating backwards from ZIP_END should return the tail. When "p" is
      * equal to the first element of the list, we're already at the head,
      * and should return NULL. */
-    if (p[0] == ZIP_END) {
+    if (p[0] == ZIP_END) { // 如果p是ziplist末字节，返回最后一个元素地址
         p = ZIPLIST_ENTRY_TAIL(zl);
         return (p[0] == ZIP_END) ? NULL : p;
-    } else if (p == ZIPLIST_ENTRY_HEAD(zl)) {
+    } else if (p == ZIPLIST_ENTRY_HEAD(zl)) { // 如果p是第一个元素，没有前一个元素了，返回nullptr
         return NULL;
-    } else {
+    } else { // 根据p元素的prevlen字段，迭代到前一个元素的地址
         ZIP_DECODE_PREVLEN(p, prevlensize, prevlen);
         assert(prevlen > 0);
         return p-prevlen;
@@ -1157,16 +1173,19 @@ unsigned char *ziplistPrev(unsigned char *zl, unsigned char *p) {
  * Return 0 if 'p' points to the end of the ziplist, 1 otherwise. */
 unsigned int ziplistGet(unsigned char *p, unsigned char **sstr, unsigned int *slen, long long *sval) {
     zlentry entry;
+    // 元素不存在，返回0
     if (p == NULL || p[0] == ZIP_END) return 0;
     if (sstr) *sstr = NULL;
 
     zipEntry(p, &entry);
     if (ZIP_IS_STR(entry.encoding)) {
+        // 如果是字符串，输出的是字符串地址和长度值
         if (sstr) {
             *slen = entry.len;
             *sstr = p+entry.headersize;
         }
     } else {
+        // 如果是整型，输出的是整数值
         if (sval) {
             *sval = zipLoadInteger(p+entry.headersize,entry.encoding);
         }
@@ -1202,6 +1221,10 @@ unsigned char *ziplistDeleteRange(unsigned char *zl, int index, unsigned int num
 
 /* Compare entry pointer to by 'p' with 'sstr' of length 'slen'. */
 /* Return 1 if equal. */
+// 这个比较函数似乎存在一个问题，由于元素存储为整型还是字符串形式是由内部实现决定，
+// 而不是外部使用的地方决定，内部就不免会有字符串和整型的转换，于是会出现下面的奇怪逻辑，
+// 0099 == 99，0099999999999999999999999 != 99999999999999999999999，
+// 因为0099是按整型存储，而0099999999999999999999999是按字符串存储，两者的比较逻辑是不一样的
 unsigned int ziplistCompare(unsigned char *p, unsigned char *sstr, unsigned int slen) {
     zlentry entry;
     unsigned char sencoding;
@@ -1211,7 +1234,7 @@ unsigned int ziplistCompare(unsigned char *p, unsigned char *sstr, unsigned int 
     zipEntry(p, &entry);
     if (ZIP_IS_STR(entry.encoding)) {
         /* Raw compare */
-        if (entry.len == slen) {
+        if (entry.len == slen) { // 如果是等长字符串，逐字节比较
             return memcmp(p+entry.headersize,sstr,slen) == 0;
         } else {
             return 0;
@@ -1221,6 +1244,7 @@ unsigned int ziplistCompare(unsigned char *p, unsigned char *sstr, unsigned int 
          * different implementations may encoded integers differently. */
         if (zipTryEncoding(sstr,slen,&sval,&sencoding)) {
           zval = zipLoadInteger(p+entry.headersize,entry.encoding);
+          // 如果是整型，比较整数值
           return zval == sval;
         }
     }
@@ -1238,11 +1262,17 @@ unsigned char *ziplistFind(unsigned char *p, unsigned char *vstr, unsigned int v
         unsigned int prevlensize, encoding, lensize, len;
         unsigned char *q;
 
+        // 这里没有复用zipRawEntryLength或者ziplistNext，
+        // 因为这里想让q指向当前元素entry-data字段，而不是下一个元素
         ZIP_DECODE_PREVLENSIZE(p, prevlensize);
         ZIP_DECODE_LENGTH(p + prevlensize, encoding, lensize, len);
+        // q指向entry-data字段，方便取内容比较
         q = p + prevlensize + lensize;
 
         if (skipcnt == 0) {
+            // 下面进行相等比较，逻辑上可以直接复用ziplistCompare，
+            // 这里再次实现比较的逻辑应该是为了性能上的考虑，
+            // 减少字符串向整型的转码操作的调用次数
             /* Compare current entry with specified entry */
             if (ZIP_IS_STR(encoding)) {
                 if (len == vlen && memcmp(q, vstr, vlen) == 0) {
@@ -1252,6 +1282,7 @@ unsigned char *ziplistFind(unsigned char *p, unsigned char *vstr, unsigned int v
                 /* Find out if the searched field can be encoded. Note that
                  * we do it only the first time, once done vencoding is set
                  * to non-zero and vll is set to the integer value. */
+                // 字符串尝试转整型只会进行一次
                 if (vencoding == 0) {
                     if (!zipTryEncoding(vstr, vlen, &vll, &vencoding)) {
                         /* If the entry can't be encoded we set it to
@@ -1260,6 +1291,9 @@ unsigned char *ziplistFind(unsigned char *p, unsigned char *vstr, unsigned int v
                         vencoding = UCHAR_MAX;
                     }
                     /* Must be non-zero by now */
+                    // 如果是字符串编码，vencoding被置为UCHAR_MAX，
+                    // 如果是整型编码，vencoding开头两位应该是11，
+                    // 所以都不可能是0
                     assert(vencoding);
                 }
 
@@ -1282,6 +1316,7 @@ unsigned char *ziplistFind(unsigned char *p, unsigned char *vstr, unsigned int v
         }
 
         /* Move to next entry */
+        // entry-data起始位置加上entry-data长度为下一个元素起始地址
         p = q + len;
     }
 
@@ -1291,9 +1326,10 @@ unsigned char *ziplistFind(unsigned char *p, unsigned char *vstr, unsigned int v
 /* Return length of ziplist. */
 unsigned int ziplistLen(unsigned char *zl) {
     unsigned int len = 0;
+    // zllen字段值小于2^16-1，则zllen值就是元素个数
     if (intrev16ifbe(ZIPLIST_LENGTH(zl)) < UINT16_MAX) {
         len = intrev16ifbe(ZIPLIST_LENGTH(zl));
-    } else {
+    } else { // zllen字段值大于等于2^16-1，则需要遍历ziplist获得元素个数
         unsigned char *p = zl+ZIPLIST_HEADER_SIZE;
         while (*p != ZIP_END) {
             p += zipRawEntryLength(p);
@@ -1301,6 +1337,9 @@ unsigned int ziplistLen(unsigned char *zl) {
         }
 
         /* Re-store length if small enough */
+        // zllen字段的值一旦到达了2^16-1，不管是插入还是删除操作，
+        // zllen的值都不再维护，所以当zllen是2^16-1时，
+        // 实际元素个数可能小于2^16-1，这里更新zllen提升准确度
         if (len < UINT16_MAX) ZIPLIST_LENGTH(zl) = intrev16ifbe(len);
     }
     return len;
