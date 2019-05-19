@@ -48,6 +48,7 @@ static const size_t optimization_level[] = {4096, 8192, 16384, 32768, 65536};
 
 /* Maximum size in bytes of any multi-element ziplist.
  * Larger values will live in their own isolated ziplists. */
+// 链表单个节点的元素个数上限
 #define SIZE_SAFETY_LIMIT 8192
 
 /* Minimum ziplist size in bytes for attempting compression. */
@@ -98,14 +99,17 @@ quicklist *quicklistCreate(void) {
     quicklist->head = quicklist->tail = NULL;
     quicklist->len = 0;
     quicklist->count = 0;
+    // 默认节点不压缩
     quicklist->compress = 0;
     quicklist->fill = -2;
     return quicklist;
 }
 
+// ??? COMPRESS_MAX的值为2^16没看懂，按理说16位的带符号数能表示的最大值为2^15-1
 #define COMPRESS_MAX (1 << 16)
 void quicklistSetCompressDepth(quicklist *quicklist, int compress) {
     if (compress > COMPRESS_MAX) {
+        // 对于16位的字段来说这里似乎已经越界了
         compress = COMPRESS_MAX;
     } else if (compress < 0) {
         compress = 0;
@@ -113,8 +117,11 @@ void quicklistSetCompressDepth(quicklist *quicklist, int compress) {
     quicklist->compress = compress;
 }
 
+// ??? FILL_MAX的值为2^15没看懂，按理说16位的带符号数能表示的最大值为2^15-1
 #define FILL_MAX (1 << 15)
 void quicklistSetFill(quicklist *quicklist, int fill) {
+    // 由于fill参数是int类型，占4字节，FILL_MAX就是一个整数了，
+    // 限制的范围是[-5, 2^15]
     if (fill > FILL_MAX) {
         fill = FILL_MAX;
     } else if (fill < -5) {
@@ -156,37 +163,48 @@ void quicklistRelease(quicklist *quicklist) {
     unsigned long len;
     quicklistNode *current, *next;
 
+    // 常规操作，遍历链表所有节点
     current = quicklist->head;
     len = quicklist->len;
     while (len--) {
         next = current->next;
 
+        // 释放ziplist
         zfree(current->zl);
         quicklist->count -= current->count;
 
+        // 释放节点
         zfree(current);
 
         quicklist->len--;
         current = next;
     }
+    // 释放链表对象
     zfree(quicklist);
 }
 
 /* Compress the ziplist in 'node' and update encoding details.
  * Returns 1 if ziplist compressed successfully.
  * Returns 0 if compression failed or if ziplist too small to compress. */
+// 压缩链表的单个节点，成功返回1，失败返回0，
+// 如果节点里内容太少，或者压缩之后不能节省足够内存，则不会进行压缩，返回0
 REDIS_STATIC int __quicklistCompressNode(quicklistNode *node) {
 #ifdef REDIS_TEST
     node->attempted_compress = 1;
 #endif
 
     /* Don't bother compressing small values */
+    // 小于48字节，不压缩
     if (node->sz < MIN_COMPRESS_BYTES)
         return 0;
 
+    // 分配内存，使得lzf->compressed拥有和原ziplist一样大的内存空间
+    // 感觉这里分配 node->sz-4 也可以，不能比原有内存少的话压缩也没有意义
     quicklistLZF *lzf = zmalloc(sizeof(*lzf) + node->sz);
 
     /* Cancel if compression fails or doesn't compress small enough */
+    // 如果压缩失败或者压缩后节省的字节不大于8则保持原有状态，不进行压缩，
+    // quicklistLZF结构本身也会占用额外的4字节，所以节省内存不大于8就相当于没节省
     if (((lzf->sz = lzf_compress(node->zl, node->sz, lzf->compressed,
                                  node->sz)) == 0) ||
         lzf->sz + MIN_COMPRESS_IMPROVE >= node->sz) {
@@ -194,7 +212,9 @@ REDIS_STATIC int __quicklistCompressNode(quicklistNode *node) {
         zfree(lzf);
         return 0;
     }
+    // 内存收缩到刚好，不浪费额外的内存
     lzf = zrealloc(lzf, sizeof(*lzf) + lzf->sz);
+    // 释放旧的ziplist
     zfree(node->zl);
     node->zl = (unsigned char *)lzf;
     node->encoding = QUICKLIST_NODE_ENCODING_LZF;
@@ -203,6 +223,7 @@ REDIS_STATIC int __quicklistCompressNode(quicklistNode *node) {
 }
 
 /* Compress only uncompressed nodes. */
+// 压缩单个节点，如果节点没有经过压缩的话
 #define quicklistCompressNode(_node)                                           \
     do {                                                                       \
         if ((_node) && (_node)->encoding == QUICKLIST_NODE_ENCODING_RAW) {     \
@@ -212,6 +233,7 @@ REDIS_STATIC int __quicklistCompressNode(quicklistNode *node) {
 
 /* Uncompress the ziplist in 'node' and update encoding details.
  * Returns 1 on successful decode, 0 on failure to decode. */
+// 解压链表的单个节点，成功返回1，失败返回0，
 REDIS_STATIC int __quicklistDecompressNode(quicklistNode *node) {
 #ifdef REDIS_TEST
     node->attempted_compress = 0;
@@ -231,6 +253,7 @@ REDIS_STATIC int __quicklistDecompressNode(quicklistNode *node) {
 }
 
 /* Decompress only compressed nodes. */
+// 解压单个节点，如果节点被压缩过的话
 #define quicklistDecompressNode(_node)                                         \
     do {                                                                       \
         if ((_node) && (_node)->encoding == QUICKLIST_NODE_ENCODING_LZF) {     \
@@ -239,6 +262,7 @@ REDIS_STATIC int __quicklistDecompressNode(quicklistNode *node) {
     } while (0)
 
 /* Force node to not be immediately re-compresable */
+// 解压单个节点，如果节点被压缩过的话，同时节点recompress字段置1
 #define quicklistDecompressNodeForUse(_node)                                   \
     do {                                                                       \
         if ((_node) && (_node)->encoding == QUICKLIST_NODE_ENCODING_LZF) {     \
@@ -250,22 +274,34 @@ REDIS_STATIC int __quicklistDecompressNode(quicklistNode *node) {
 /* Extract the raw LZF data from this quicklistNode.
  * Pointer to LZF data is assigned to '*data'.
  * Return value is the length of compressed LZF data. */
+// 获取节点经过LZF压缩的内容，返回内容的长度，*data输出内容首地址，
+// 函数不会检测节点是否是压缩过的，使用的地方需要保证这一点
 size_t quicklistGetLzf(const quicklistNode *node, void **data) {
     quicklistLZF *lzf = (quicklistLZF *)node->zl;
     *data = lzf->compressed;
     return lzf->sz;
 }
 
+// 根据压缩深度字段compress判断列表是否允许节点压缩，
+// 创建链表时compress字段默认是0，不允许压缩
 #define quicklistAllowsCompression(_ql) ((_ql)->compress != 0)
 
 /* Force 'quicklist' to meet compression guidelines set by compress depth.
  * The only way to guarantee interior nodes get compressed is to iterate
  * to our "interior" compress depth then compress the next node we find.
  * If compress depth is larger than the entire list, we return immediately. */
+// 函数不仅会压缩节点，也可能会解压节点，链表两端压缩深度范围内的节点会解压，
+// 靠近压缩深度边缘但不在压缩深度范围内的节点可能会被压缩，
+// 参数node如果在压缩深度范围外则会被压缩，否则会被解压
 REDIS_STATIC void __quicklistCompress(const quicklist *quicklist,
                                       quicklistNode *node) {
     /* If length is less than our compress depth (from both sides),
      * we can't compress anything. */
+    // 根据压缩深度字段compress判断是否需要压缩：
+    // 1，当compress为0，代表链表不支持压缩，不需要考虑压缩解压相关；
+    // 2，当链表长度小于两倍compress，说明链表中的节点都已经且应当处于压缩状态；
+    // 3，当链表长度等于两倍compress，说明链表中的节点都应当处于压缩状态，
+    // 这时需要解压所有节点；
     if (!quicklistAllowsCompression(quicklist) ||
         quicklist->len < (unsigned int)(quicklist->compress * 2))
         return;
@@ -302,17 +338,26 @@ REDIS_STATIC void __quicklistCompress(const quicklist *quicklist,
     /* Iterate until we reach compress depth for both sides of the list.a
      * Note: because we do length checks at the *top* of this function,
      *       we can skip explicit null checks below. Everything exists. */
+    // 从头尾向中间遍历，最多遍历和压缩深度相等的次数，
+    // 由于前面已经有压缩深度和链表节点个数的比较检测，
+    // 遍历的时候不可能出现从一头遍历到另一头的情况，
+    // 也不可能出现前后遍历的内容出现交叉的情况
     quicklistNode *forward = quicklist->head;
     quicklistNode *reverse = quicklist->tail;
     int depth = 0;
     int in_depth = 0;
     while (depth++ < quicklist->compress) {
+        // 在压缩深度范围内的节点，应该是解压状态
         quicklistDecompressNode(forward);
         quicklistDecompressNode(reverse);
 
+        // 遍历的时候遇到传入的节点，说明传入的节点在压缩深度范围内，
+        // 节点需要处于解压缩状态而不是压缩状态
         if (forward == node || reverse == node)
             in_depth = 1;
 
+        // 头尾迭代指针相等，说明链表的长度刚好是压缩深度的两倍，
+        // 所有的节点都应该处于解压状态，没有节点需要压缩，直接返回
         if (forward == reverse)
             return;
 
@@ -320,16 +365,23 @@ REDIS_STATIC void __quicklistCompress(const quicklist *quicklist,
         reverse = reverse->prev;
     }
 
+    // 如果不在两端深度范围内，则需要压缩节点
     if (!in_depth)
         quicklistCompressNode(node);
 
     if (depth > 2) {
+        // 压缩深度大于2时才会压缩靠近中间的边缘节点，
+        // ??? 暂时没看明白原因，大概是头尾两端的节点操作比较频繁，
+        // 不希望靠近头尾两端的节点有过多的压缩操作吧
         /* At this point, forward and reverse are one node beyond depth */
+        // 这里不会遍历所有中间的节点，大概一个是为了性能考虑，
+        // 第二是每次链表的添加操作一般只会涉及一个节点，所以考虑临近的一个节点就行了
         quicklistCompressNode(forward);
         quicklistCompressNode(reverse);
     }
 }
 
+// 压缩链表，_node的recompress字段确定是否不需要管压缩深度直接压缩节点
 #define quicklistCompress(_ql, _node)                                          \
     do {                                                                       \
         if ((_node)->recompress)                                               \
@@ -339,6 +391,7 @@ REDIS_STATIC void __quicklistCompress(const quicklist *quicklist,
     } while (0)
 
 /* If we previously used quicklistDecompressNodeForUse(), just recompress. */
+// 只有recompress字段为1时才压缩节点
 #define quicklistRecompressOnly(_ql, _node)                                    \
     do {                                                                       \
         if ((_node)->recompress)                                               \
@@ -349,9 +402,12 @@ REDIS_STATIC void __quicklistCompress(const quicklist *quicklist,
  * Insert 'new_node' before 'old_node' if 'after' is 0.
  * Note: 'new_node' is *always* uncompressed, so if we assign it to
  *       head or tail, we do not need to uncompress it. */
+// 插入new_node节点，after为1插入到old_node后面，为0插入到old_node前面
+// new_node没有经过压缩，如果链表为空old_node应该是nullptr
 REDIS_STATIC void __quicklistInsertNode(quicklist *quicklist,
                                         quicklistNode *old_node,
                                         quicklistNode *new_node, int after) {
+    // 链表常规的连接操作
     if (after) {
         new_node->prev = old_node;
         if (old_node) {
@@ -378,6 +434,11 @@ REDIS_STATIC void __quicklistInsertNode(quicklist *quicklist,
         quicklist->head = quicklist->tail = new_node;
     }
 
+    // 新加入了节点，旧节点位置发生变化，可能需要压缩，
+    // 如果插入的节点在链表中间位置的话，quicklistCompress可能不会压缩new_node，
+    // 估计这里预计插入操作分布在头尾较多
+    // 如果插入的节点在中间，这里new_node不会经过压缩，
+    // 应该是新加入的节点后续继续操作的概率大，所以尽量不压缩
     if (old_node)
         quicklistCompress(quicklist, old_node);
 
@@ -397,6 +458,9 @@ REDIS_STATIC void _quicklistInsertNodeAfter(quicklist *quicklist,
     __quicklistInsertNode(quicklist, old_node, new_node, 1);
 }
 
+// 参数sz是节点内ziplist占用的空间，参数fill是链表的fill字段，
+// 判断ziplist的占用空间是否达到上限，
+// 可能是为了效率考虑的上限，和ziplist的表示能力无关
 REDIS_STATIC int
 _quicklistNodeSizeMeetsOptimizationRequirement(const size_t sz,
                                                const int fill) {
@@ -415,6 +479,7 @@ _quicklistNodeSizeMeetsOptimizationRequirement(const size_t sz,
     }
 }
 
+// 判断单个节点ziplist元素个数是否已经达到上限
 #define sizeMeetsSafetyLimit(sz) ((sz) <= SIZE_SAFETY_LIMIT)
 
 REDIS_STATIC int _quicklistNodeAllowInsert(const quicklistNode *node,
