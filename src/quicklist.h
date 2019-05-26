@@ -61,7 +61,10 @@ typedef struct quicklistNode {
     unsigned int encoding : 2;   /* RAW==1 or LZF==2 */
     // zl指向的容器默认是ziplist，看实现也只有ziplist一种
     unsigned int container : 2;  /* NONE==1 or ZIPLIST==2 */
-    // 是否节点曾经被压缩过，节点解压之后字段置1
+    // 是否节点曾经被压缩过，节点解压之后字段可能会置1，
+    // 例如通过迭代器遍历节点时，会解压节点recompress置1，
+    // 迭代器指向下一个节点时，会重新压缩节点，
+    // ??? 但是这个字段添加的目的暂时不明，似乎没有这个字段也没什么关系
     unsigned int recompress : 1; /* was this node previous compressed? */
     // 看实现attempted_compress似乎只在测试代码里用到，
     // 每次节点尝试压缩这个字段就会置1，尝试解压字段就会置0
@@ -98,10 +101,9 @@ typedef struct quicklist {
     // 链表的节点个数，一个节点可以存储多个元素
     unsigned long len;          /* number of quicklistNodes */
     // 控制节点ziplist占用空间上限的字段，目前实现的取值范围是[-5, 2^15]，
-    // 作为数组的索引，[-5, 0)映射的索引为[0, 5)，如果fill>=0代表没有上限
+    // 作为数组的索引，[-5, 0)映射的索引为[0, 5)，
     // 对应的ziplist占用空间上限为4096, 8192, 16384, 32768, 65536，
-    // 默认的上限是8192
-    // ??? 不清楚为什么fill字段取负值，有点别扭
+    // 默认的上限是8192，如果fill>=0，fill的值本身就是上限
     int fill : 16;              /* fill factor for individual nodes */
     // 压缩深度，链表两头compress个节点不会经过LZF压缩，链表两头的元素访问比较频繁，
     // 不压缩有利于性能，中间的节点压缩可以节省内存
@@ -109,21 +111,37 @@ typedef struct quicklist {
     unsigned int compress : 16; /* depth of end nodes not to compress;0=off */
 } quicklist;
 
+// 链表迭代器
 typedef struct quicklistIter {
+    // 迭代的链表
     const quicklist *quicklist;
+    // 当前节点
     quicklistNode *current;
+    // 元素存储起始位置，在ziplist内的某个地址（大概是ziplist item的缩写）
     unsigned char *zi;
+    // 元素在当前节点ziplist的index
     long offset; /* offset in current ziplist */
+    // 迭代方向，AL_START_HEAD从前向后或AL_START_TAIL从后向前
     int direction;
 } quicklistIter;
 
+// 代表链表中的一个元素
 typedef struct quicklistEntry {
+    // 链表对象
     const quicklist *quicklist;
+    // 元素所在节点
     quicklistNode *node;
+    // 元素存储起始位置，在ziplist内的某个地址（大概是ziplist item的缩写）
     unsigned char *zi;
+    // 元素的实际地址（zi包含了prevlen等其他字段），如果元素是字符串存储，
+    // 则value非空，字符串表示为(value, sz)，如果元素是整型，则value为空，
+    // 整数存储在longval字段
     unsigned char *value;
+    // 整型元素值
     long long longval;
+    // 字符串元素的值
     unsigned int sz;
+    // 元素在当前节点ziplist的index
     int offset;
 } quicklistEntry;
 
@@ -157,13 +175,18 @@ void quicklistSetFill(quicklist *quicklist, int fill);
 void quicklistSetOptions(quicklist *quicklist, int fill, int depth);
 // 释放链表内存，包括所有的节点和链表本身
 void quicklistRelease(quicklist *quicklist);
+// 元素(value, sz)加入头部，如果头部新创建了节点返回1，否则返回0（返回0也是加入成功）
 int quicklistPushHead(quicklist *quicklist, void *value, const size_t sz);
+// 元素(value, sz)加入尾部，如果尾部新创建了节点返回1，否则返回0（返回0也是加入成功）
 int quicklistPushTail(quicklist *quicklist, void *value, const size_t sz);
 void quicklistPush(quicklist *quicklist, void *value, const size_t sz,
                    int where);
+// 一次追加一个ziplist，作为单个节点的形式
 void quicklistAppendZiplist(quicklist *quicklist, unsigned char *zl);
+// 一次追加一个ziplist，逐个元素加入的形式
 quicklist *quicklistAppendValuesFromZiplist(quicklist *quicklist,
                                             unsigned char *zl);
+// 创建链表，加入ziplist的元素（可能会有不只一个节点）
 quicklist *quicklistCreateFromZiplist(int fill, int compress,
                                       unsigned char *zl);
 void quicklistInsertAfter(quicklist *quicklist, quicklistEntry *node,

@@ -40,6 +40,7 @@ const char *SDS_NOINIT;
 #include <stdarg.h>
 #include <stdint.h>
 
+// 字符串表示结构，真正的字符串指针前面会有头部字段，存储字符串的长度、可用空间
 typedef char *sds;
 
 /* Note: sdshdr5 is never used, we just access the flags byte directly.

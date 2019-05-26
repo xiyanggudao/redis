@@ -59,7 +59,7 @@ unsigned int ziplistGet(unsigned char *p, unsigned char **sval, unsigned int *sl
 // 在指定位置p之前插入元素(s, slen)，返回列表地址
 // 插入过程可能会有内存的重新分配，返回的地址不一定和zl一致
 unsigned char *ziplistInsert(unsigned char *zl, unsigned char *p, unsigned char *s, unsigned int slen);
-// 删除元素*p，删除元素之后*p指向下一个元素，返回删除列表指针
+// 删除元素*p（*p指向zl的元素位置），删除元素之后*p指向下一个元素，返回删除列表指针
 // 删除过程可能会有内存的重新分配，返回的地址不一定和zl一致
 unsigned char *ziplistDelete(unsigned char *zl, unsigned char **p);
 // 从第index个元素开始，向后删除最多num个元素，返回删除列表指针
