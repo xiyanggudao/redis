@@ -48,16 +48,19 @@
 
 #include "anet.h"
 
+// 只是sprintf，写入err
 static void anetSetError(char *err, const char *fmt, ...)
 {
     va_list ap;
 
     if (!err) return;
     va_start(ap, fmt);
+    // 加入上限保护ANET_ERR_LEN，err约定的大小
     vsnprintf(err, ANET_ERR_LEN, fmt, ap);
     va_end(ap);
 }
 
+// 设置阻塞位，non_block非0则是非阻塞模式，0则是阻塞模式
 int anetSetBlock(char *err, int fd, int non_block) {
     int flags;
 
@@ -81,10 +84,12 @@ int anetSetBlock(char *err, int fd, int non_block) {
     return ANET_OK;
 }
 
+// 设置为非阻塞模式
 int anetNonBlock(char *err, int fd) {
     return anetSetBlock(err,fd,1);
 }
 
+// 设置为阻塞模式
 int anetBlock(char *err, int fd) {
     return anetSetBlock(err,fd,0);
 }
@@ -92,6 +97,7 @@ int anetBlock(char *err, int fd) {
 /* Set TCP keep alive option to detect dead peers. The interval option
  * is only used for Linux as we are using Linux-specific APIs to set
  * the probe send time, interval, and count. */
+// 设置使用TCP的心跳检测机制
 int anetKeepAlive(char *err, int fd, int interval)
 {
     int val = 1;
@@ -102,12 +108,14 @@ int anetKeepAlive(char *err, int fd, int interval)
         return ANET_ERR;
     }
 
+    // 似乎linux下心跳检测间隔能单独设置，unix下是系统全局同一个设置
 #ifdef __linux__
     /* Default settings are more or less garbage, with the keepalive time
      * set to 7200 by default on Linux. Modify settings to make the feature
      * actually useful. */
 
     /* Send first probe after interval. */
+    // 设置心跳检测的间隔
     val = interval;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0) {
         anetSetError(err, "setsockopt TCP_KEEPIDLE: %s\n", strerror(errno));
@@ -119,6 +127,7 @@ int anetKeepAlive(char *err, int fd, int interval)
      * an error (see the next setsockopt call). */
     val = interval/3;
     if (val == 0) val = 1;
+    // 心跳检测失败后的重试间隔
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0) {
         anetSetError(err, "setsockopt TCP_KEEPINTVL: %s\n", strerror(errno));
         return ANET_ERR;
@@ -126,6 +135,7 @@ int anetKeepAlive(char *err, int fd, int interval)
 
     /* Consider the socket in error state after three we send three ACK
      * probes without getting a reply. */
+    // 心跳检测失败后的重试次数
     val = 3;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0) {
         anetSetError(err, "setsockopt TCP_KEEPCNT: %s\n", strerror(errno));
@@ -138,6 +148,9 @@ int anetKeepAlive(char *err, int fd, int interval)
     return ANET_OK;
 }
 
+// 设置NoDelay标记，NoDelay会禁用Nagle算法
+// Nagle算法用于自动连接许多的小缓冲器消息，通过减少发送包的数量来提高效率，
+// Nagle虽然解决了小封包问题，但也导致了较高的不可预测的延迟，同时降低了吞吐量
 static int anetSetTcpNoDelay(char *err, int fd, int val)
 {
     if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val)) == -1)
@@ -158,7 +171,7 @@ int anetDisableTcpNoDelay(char *err, int fd)
     return anetSetTcpNoDelay(err, fd, 0);
 }
 
-
+// 设置发送缓冲区的大小
 int anetSetSendBuffer(char *err, int fd, int buffsize)
 {
     if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffsize, sizeof(buffsize)) == -1)
@@ -169,6 +182,7 @@ int anetSetSendBuffer(char *err, int fd, int buffsize)
     return ANET_OK;
 }
 
+// 设置Tcp心跳检测，没有检测间隔参数
 int anetTcpKeepAlive(char *err, int fd)
 {
     int yes = 1;
@@ -181,6 +195,7 @@ int anetTcpKeepAlive(char *err, int fd)
 
 /* Set the socket send timeout (SO_SNDTIMEO socket option) to the specified
  * number of milliseconds, or disable it if the 'ms' argument is zero. */
+// 设置发送超时时间
 int anetSendTimeout(char *err, int fd, long long ms) {
     struct timeval tv;
 
@@ -200,6 +215,8 @@ int anetSendTimeout(char *err, int fd, long long ms) {
  * If flags is set to ANET_IP_ONLY the function only resolves hostnames
  * that are actually already IPv4 or IPv6 addresses. This turns the function
  * into a validating / normalizing function. */
+ // 将主机名解析成地址格式(0.0.0.0)，如果flags设置为ANET_IP_ONLY，
+ // 则host本身就是地址格式，函数只是起一个检测和格式化作用
 int anetGenericResolve(char *err, char *host, char *ipbuf, size_t ipbuf_len,
                        int flags)
 {
@@ -207,14 +224,19 @@ int anetGenericResolve(char *err, char *host, char *ipbuf, size_t ipbuf_len,
     int rv;
 
     memset(&hints,0,sizeof(hints));
+    // hints作为过滤器，如果flags是ANET_IP_ONLY，则host只能是地址格式
     if (flags & ANET_IP_ONLY) hints.ai_flags = AI_NUMERICHOST;
+    // ai_family可以是AF_INET(IPv4)、AF_INET6(IPv6)、AF_UNSPEC(IPv4 and IPv6)
     hints.ai_family = AF_UNSPEC;
+    // socktype可以是SOCK_STREAM（面向连接，TCP）、SOCK_DGRAM（面向消息，无保障）、
+    // SOCK_RAW（原始套接字），socktype为0表示所有类型都可以
     hints.ai_socktype = SOCK_STREAM;  /* specify socktype to avoid dups */
 
     if ((rv = getaddrinfo(host, NULL, &hints, &info)) != 0) {
         anetSetError(err, "%s", gai_strerror(rv));
         return ANET_ERR;
     }
+    // ip地址表达转回字符串表达
     if (info->ai_family == AF_INET) {
         struct sockaddr_in *sa = (struct sockaddr_in *)info->ai_addr;
         inet_ntop(AF_INET, &(sa->sin_addr), ipbuf, ipbuf_len);
@@ -239,6 +261,11 @@ static int anetSetReuseAddr(char *err, int fd) {
     int yes = 1;
     /* Make sure connection-intensive things like the redis benchmark
      * will be able to close/open sockets a zillion of times */
+    // 设置SO_REUSEADDR标记，默认情况下，进程结束了端口不会立即释放，
+    // 而是处于TIME_WAIT状态，可靠地实现TCP全双工连接的终止（4次挥手），
+    // 这时如果重启进程，可能会出现端口已被占用的错误。
+    // 有时需要进行大量重启端口操作，例如在测试时，这时就需要SO_REUSEADDR标记，
+    // 重启后能把端口抢过来
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
         anetSetError(err, "setsockopt SO_REUSEADDR: %s", strerror(errno));
         return ANET_ERR;
@@ -248,6 +275,7 @@ static int anetSetReuseAddr(char *err, int fd) {
 
 static int anetCreateSocket(char *err, int domain) {
     int s;
+    // TCP面向连接的socket
     if ((s = socket(domain, SOCK_STREAM, 0)) == -1) {
         anetSetError(err, "creating socket: %s", strerror(errno));
         return ANET_ERR;
@@ -282,6 +310,7 @@ static int anetTcpGenericConnect(char *err, char *addr, int port,
         anetSetError(err, "%s", gai_strerror(rv));
         return ANET_ERR;
     }
+    // socket的创建和连接，如果失败的话会用别的地址再次尝试
     for (p = servinfo; p != NULL; p = p->ai_next) {
         /* Try to create the socket and to connect it.
          * If we fail in the socket() call, or on connect(), we retry with
@@ -291,6 +320,7 @@ static int anetTcpGenericConnect(char *err, char *addr, int port,
         if (anetSetReuseAddr(err,s) == ANET_ERR) goto error;
         if (flags & ANET_CONNECT_NONBLOCK && anetNonBlock(err,s) != ANET_OK)
             goto error;
+        // 如果传入了source_addr，则会把socket绑定到source_addr
         if (source_addr) {
             int bound = 0;
             /* Using getaddrinfo saves us from self-determining IPv4 vs IPv6 */
@@ -339,6 +369,7 @@ end:
 
     /* Handle best effort binding: if a binding address was used, but it is
      * not possible to create a socket, try again without a binding address. */
+    // 如果设置了ANET_CONNECT_BE_BINDING，即使bind失败了，也会创建socket返回
     if (s == ANET_ERR && source_addr && (flags & ANET_CONNECT_BE_BINDING)) {
         return anetTcpGenericConnect(err,addr,port,NULL,flags);
     } else {

@@ -1760,6 +1760,7 @@ void updateCachedTime(void) {
  * a macro is used: run_with_period(milliseconds) { .... }
  */
 
+// 事件循环的定时事件回调函数
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
     UNUSED(eventLoop);
@@ -2029,7 +2030,9 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 /* This function gets called every time Redis is entering the
  * main loop of the event driven library, that is, before to sleep
  * for ready file descriptors. */
+// 事件循环进入等待时会调用的函数
 void beforeSleep(struct aeEventLoop *eventLoop) {
+    // UNUSED是为了避免函数参数未被使用的编译警告
     UNUSED(eventLoop);
 
     /* Call the Redis Cluster before sleep function. Note that this function
@@ -2080,19 +2083,26 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     /* Before we are going to sleep, let the threads access the dataset by
      * releasing the GIL. Redis main thread will not touch anything at this
      * time. */
+    // 释放动态库加载的全局锁，大概是动态库加载过程不在主线程，
+    // 为了避免多线程数据访问冲突，对外服务期间不进行动态库加载
     if (moduleCount()) moduleReleaseGIL();
 }
 
 /* This function is called immadiately after the event loop multiplexing
  * API returned, and the control is going to soon return to Redis by invoking
  * the different events callbacks. */
+// 事件循环等待就绪后会调用的函数
 void afterSleep(struct aeEventLoop *eventLoop) {
+    // UNUSED是为了避免函数参数未被使用的编译警告
     UNUSED(eventLoop);
+    // 获取动态库加载的全局锁，大概是动态库加载过程不在主线程，
+    // 为了避免多线程数据访问冲突，动态库加载期间不进行对外服务
     if (moduleCount()) moduleAcquireGIL();
 }
 
 /* =========================== Server initialization ======================== */
 
+// 创建共享对象池里面的对象
 void createSharedObjects(void) {
     int j;
 
@@ -2806,6 +2816,7 @@ void initServer(void) {
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
      * expired keys and so forth. */
+    // 设置定时事件，这里给1毫秒后触发代表尽快触发，后续触发频率根据serverCron返回值确定
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
         serverPanic("Can't create event loop timers.");
         exit(1);

@@ -146,6 +146,7 @@ robj *createStringObjectFromLongLongWithOptions(long long value, int valueobj) {
         o = shared.integers[value];
     } else {
         if (value >= LONG_MIN && value <= LONG_MAX) {
+            // 如果整型可以用4字节表示，则ptr字段本身就是int类型，不需要额外分配string内存
             o = createObject(OBJ_STRING, NULL);
             o->encoding = OBJ_ENCODING_INT;
             o->ptr = (void*)((long)value);

@@ -621,6 +621,8 @@ typedef struct RedisModuleDigest {
 #define OBJ_ENCODING_ZIPLIST 5 /* Encoded as ziplist */
 #define OBJ_ENCODING_INTSET 6  /* Encoded as intset */
 #define OBJ_ENCODING_SKIPLIST 7  /* Encoded as skiplist */
+// embedded string，redisObject和string存放的内存是连续的，并且string只读，
+// string的长度和占用的空间一致，应该是为了优化内存，连sds的alloc和flags字段都省了
 #define OBJ_ENCODING_EMBSTR 8  /* Embedded sds string encoding */
 #define OBJ_ENCODING_QUICKLIST 9 /* Encoded as linked list of ziplists */
 #define OBJ_ENCODING_STREAM 10 /* Encoded as a radix tree of listpacks */
@@ -629,14 +631,23 @@ typedef struct RedisModuleDigest {
 #define LRU_CLOCK_MAX ((1<<LRU_BITS)-1) /* Max value of obj->lru */
 #define LRU_CLOCK_RESOLUTION 1000 /* LRU clock resolution in ms */
 
+// 共享对象的特殊引用计数，共享对象是一些常用到的对象，创建之后在程序运行期一直存在，
+// 放在共享对象池sharedObjectsStruct里面
 #define OBJ_SHARED_REFCOUNT INT_MAX
 typedef struct redisObject {
+    // 对象的类型，对应的是客户端可见的几种数据类型，
+    // string, list, set, zset, hash
     unsigned type:4;
+    // 编码，对应的是内部实现的数据结构类型
     unsigned encoding:4;
+    // LRU Least Recently Used字段，和对象回收机制相关，
+    // 如果设置了maxmemory，内存到达上限时redis会回收一些对象
     unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
                             * LFU data (least significant 8 bits frequency
                             * and most significant 16 bits access time). */
+    // 引用计数，对象被引用的次数
     int refcount;
+    // 对象指针
     void *ptr;
 } robj;
 
@@ -855,6 +866,7 @@ struct moduleLoadQueueEntry {
     robj **argv;
 };
 
+// 共享对象池，存放一些常用的字符串和整数，节约内存
 struct sharedObjectsStruct {
     robj *crlf, *ok, *err, *emptybulk, *czero, *cone, *pong, *space,
     *colon, *queued, *null[4], *nullarray[4],
@@ -1016,6 +1028,7 @@ struct redisServer {
     redisDb *db;
     dict *commands;             /* Command table */
     dict *orig_commands;        /* Command table before command renaming. */
+    // 事件循环对象
     aeEventLoop *el;
     unsigned int lruclock;      /* Clock for LRU eviction */
     int shutdown_asap;          /* SHUTDOWN needed ASAP */
@@ -1039,10 +1052,12 @@ struct redisServer {
     /* Networking */
     int port;                   /* TCP listening port */
     int tcp_backlog;            /* TCP listen() backlog */
+    // 似乎bindaddr_count默认是0，监听的地址是0.0.0.0，只监听本机
     char *bindaddr[CONFIG_BINDADDR_MAX]; /* Addresses we should bind to */
     int bindaddr_count;         /* Number of addresses in server.bindaddr[] */
     char *unixsocket;           /* UNIX socket path */
     mode_t unixsocketperm;      /* UNIX socket permission */
+    // 默认情况下ipfd_count应该是一个，server端socket的文件描述符
     int ipfd[CONFIG_BINDADDR_MAX]; /* TCP socket file descriptors */
     int ipfd_count;             /* Used slots in ipfd[] */
     int sofd;                   /* Unix socket file descriptor */
@@ -1457,6 +1472,7 @@ typedef struct {
  *----------------------------------------------------------------------------*/
 
 extern struct redisServer server;
+// 共享对象池声明
 extern struct sharedObjectsStruct shared;
 extern dictType objectKeyPointerValueDictType;
 extern dictType objectKeyHeapPointerValueDictType;
