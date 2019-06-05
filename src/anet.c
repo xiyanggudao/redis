@@ -265,6 +265,7 @@ static int anetCreateSocket(char *err, int domain) {
 #define ANET_CONNECT_NONE 0
 #define ANET_CONNECT_NONBLOCK 1
 #define ANET_CONNECT_BE_BINDING 2 /* Best effort binding. */
+// addr，port，source_addr都是输入参数
 static int anetTcpGenericConnect(char *err, char *addr, int port,
                                  char *source_addr, int flags)
 {
@@ -414,6 +415,7 @@ int anetRead(int fd, char *buf, int count)
     ssize_t nread, totlen = 0;
     while(totlen != count) {
         nread = read(fd,buf,count-totlen);
+        // 0，可能到达eof或者非阻塞情况下buffer里读完了
         if (nread == 0) return totlen;
         if (nread == -1) return -1;
         totlen += nread;
@@ -429,6 +431,7 @@ int anetWrite(int fd, char *buf, int count)
     ssize_t nwritten, totlen = 0;
     while(totlen != count) {
         nwritten = write(fd,buf,count-totlen);
+        // 0，非阻塞情况下buffer已经满了
         if (nwritten == 0) return totlen;
         if (nwritten == -1) return -1;
         totlen += nwritten;
@@ -440,6 +443,7 @@ int anetWrite(int fd, char *buf, int count)
 static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int backlog) {
     if (bind(s,sa,len) == -1) {
         anetSetError(err, "bind: %s", strerror(errno));
+        // 在anetListen内部关闭还是有点奇怪的，毕竟socket不是在这里创建的，在调用的地方决定是否关闭感觉合适一些
         close(s);
         return ANET_ERR;
     }
@@ -454,6 +458,9 @@ static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int 
 
 static int anetV6Only(char *err, int s) {
     int yes = 1;
+    // IPV6的套接字可以访问IPV4与IPV6的协议栈。所以只用创建一个IPV6 Socket，
+    // 就可以接受来自IPv4和IPv6的连接
+    // 通过setsocketopt选项IPV6_V6ONLY，ipv6的Socket就不再接受IPv4的连接
     if (setsockopt(s,IPPROTO_IPV6,IPV6_V6ONLY,&yes,sizeof(yes)) == -1) {
         anetSetError(err, "setsockopt: %s", strerror(errno));
         close(s);
@@ -484,6 +491,8 @@ static int _anetTcpServer(char *err, int port, char *bindaddr, int af, int backl
 
         if (af == AF_INET6 && anetV6Only(err,s) == ANET_ERR) goto error;
         if (anetSetReuseAddr(err,s) == ANET_ERR) goto error;
+        // listen失败了anetListen函数会关闭socket，感觉有点奇怪，
+        // 出错了在调用的地方统一关闭感觉更好一点
         if (anetListen(err,s,p->ai_addr,p->ai_addrlen,backlog) == ANET_ERR) s = ANET_ERR;
         goto end;
     }
@@ -510,6 +519,7 @@ int anetTcp6Server(char *err, int port, char *bindaddr, int backlog)
     return _anetTcpServer(err, port, bindaddr, AF_INET6, backlog);
 }
 
+// 创建Unix域socket并且绑定监听
 int anetUnixServer(char *err, char *path, mode_t perm, int backlog)
 {
     int s;
@@ -531,8 +541,10 @@ int anetUnixServer(char *err, char *path, mode_t perm, int backlog)
 static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *len) {
     int fd;
     while(1) {
+        // len是输入输出参数，sa是连接另一端的地址
         fd = accept(s,sa,len);
         if (fd == -1) {
+            // 中断重试
             if (errno == EINTR)
                 continue;
             else {
@@ -547,6 +559,8 @@ static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *l
 
 int anetTcpAccept(char *err, int s, char *ip, size_t ip_len, int *port) {
     int fd;
+    // sockaddr和sockaddr_storage都是通用套接字，sockaddr占16字节，
+    // sockaddr_storage则是占128字节，为了适应比较大的协议结构而定义
     struct sockaddr_storage sa;
     socklen_t salen = sizeof(sa);
     if ((fd = anetGenericAccept(err,s,(struct sockaddr*)&sa,&salen)) == -1)
@@ -578,6 +592,7 @@ int anetPeerToString(int fd, char *ip, size_t ip_len, int *port) {
     struct sockaddr_storage sa;
     socklen_t salen = sizeof(sa);
 
+    // 获取socket的对方地址
     if (getpeername(fd,(struct sockaddr*)&sa,&salen) == -1) goto error;
     if (ip_len == 0) goto error;
 
@@ -631,6 +646,7 @@ int anetSockName(int fd, char *ip, size_t ip_len, int *port) {
     struct sockaddr_storage sa;
     socklen_t salen = sizeof(sa);
 
+    // 获取本机地址，salen是输入输出参数
     if (getsockname(fd,(struct sockaddr*)&sa,&salen) == -1) {
         if (port) *port = 0;
         ip[0] = '?';
